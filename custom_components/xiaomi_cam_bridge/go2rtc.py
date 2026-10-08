@@ -88,6 +88,27 @@ class Go2rtcController:
         _LOGGER.info(
             "go2rtc 已启动 pid=%s，配置：%s", self.proc.pid, self.config_path
         )
+        # 延迟读取 go2rtc.log 末尾，以 WARNING 级输出（/api/error_log 可见），
+        # 便于远程排障小米源连通状态。
+        self.hass.async_create_task(self._diagnose_log())
+
+    async def _diagnose_log(self) -> None:
+        """延迟 12s 读取 go2rtc.log 末尾并告警输出，便于经 /api/error_log 远程查看。"""
+        await asyncio.sleep(12)
+        try:
+            lines = await self.hass.async_add_executor_job(self._read_log_tail)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("[xmb-go2rtc] 读取 go2rtc.log 失败：%s", err)
+            return
+        _LOGGER.warning("[xmb-go2rtc] === go2rtc.log 末 %d 行 ===", len(lines))
+        for ln in lines:
+            _LOGGER.warning("[xmb-go2rtc] %s", ln)
+
+    def _read_log_tail(self, n: int = 50) -> list:
+        if not os.path.isfile(self.log_path):
+            return ["(go2rtc.log 尚未生成)"]
+        with open(self.log_path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines()[-n:]
 
     def _write_yaml(self, text: str) -> None:
         with open(self.config_path, "w", encoding="utf-8") as fh:
