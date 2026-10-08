@@ -8,8 +8,13 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.components.ffmpeg import FFmpegManager
-from homeassistant.components.ffmpeg.const import DATA_FFMPEG
+
+try:
+    # HA >= 2025.x：DATA_FFMPEG 位于 ffmpeg 包根
+    from homeassistant.components.ffmpeg import DATA_FFMPEG, FFmpegManager
+except ImportError:  # 兼容旧版：常量在 .const
+    from homeassistant.components.ffmpeg import FFmpegManager
+    from homeassistant.components.ffmpeg.const import DATA_FFMPEG
 
 from .binary import BinaryManager
 from .go2rtc import Go2rtcController
@@ -25,8 +30,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # 全局注入自带 ffmpeg 二进制：HA 的 stream 组件（直播 HLS 流转码）依赖
     # hass.data[DATA_FFMPEG]，不设置会在开直播时报错。
-    # 同时把路径交给摄像头平台做实体级兜底，避免被用户其它 ffmpeg: 配置覆盖。
-    hass.data[DATA_FFMPEG] = FFmpegManager(hass, executable=bin_mgr.ffmpeg_path)
+    # 构造函数为位置参数 (hass, ffmpeg_bin)（新版签名，旧版同样兼容）。
+    manager = FFmpegManager(hass, bin_mgr.ffmpeg_path)
+    try:
+        await manager.async_get_version()  # 让 content-type 逻辑拿到版本号
+    except Exception:  # noqa: BLE001 版本探测失败不阻塞安装
+        pass
+    hass.data[DATA_FFMPEG] = manager
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["ffmpeg_path"] = bin_mgr.ffmpeg_path
 
