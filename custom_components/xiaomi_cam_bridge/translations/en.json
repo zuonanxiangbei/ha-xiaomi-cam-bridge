@@ -1,0 +1,19 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "小米摄像头桥接",
+        "description": "将小米/米家摄像头通过 go2rtc 接入 Home Assistant。",
+        "data": {
+          "uid": "小米账号 UID",
+          "password": "米家登录密码",
+          "region": "区域",
+          "ip_cw301": "摄像机 4C 3K 局域网 IP（选填）",
+          "ip_cw501d": "摄像机 4 双摄版 局域网 IP（选填）"
+        }
+      }
+    },
+    "error": {},
+    "abort": {}
+  }
+}
