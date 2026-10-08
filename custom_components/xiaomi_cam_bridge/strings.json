@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "小米摄像头桥接（proot）",
+        "description": "配置小米云 Token 与摄像头局域网 IP。",
+        "data": {
+          "uid": "小米账号 ID（数字）",
+          "password": "小米云 Token（V1:...）",
+          "region": "区域代码",
+          "ip_cw301": "小米室外摄像机 4C 3K 局域网 IP",
+          "ip_cw501d": "小米室外摄像机 4 双摄版 局域网 IP"
+        },
+        "data_description": {
+          "uid": "米家账号的数字 ID（不是手机号，是 mi.com 里的数字 ID）。",
+          "password": "不是米家登录密码！是小米云 Token，形如 V1:xxxx。用「小米token助手」浏览器扩展登录米家后复制，或 PC 端 go2rtc WebUI 登录后抄 V1: 串。裸 token 会自动补 V1: 前缀。",
+          "region": "账号所属服务器区域，中国大陆填 cn。",
+          "ip_cw301": "摄像机的局域网 IP（形如 192.168.3.x），强烈建议填写。",
+          "ip_cw501d": "摄像机的局域网 IP（形如 192.168.3.x），强烈建议填写。"
+        }
+      }
+    }
+  }
+}
