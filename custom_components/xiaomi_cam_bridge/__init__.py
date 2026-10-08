@@ -58,8 +58,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(_async_cleanup)
 
-    # 转发到摄像头平台
-    await hass.config_entries.async_forward_entry_setups(entry, ["camera"])
+    # 转发到摄像头平台；若实体加载失败，务必先停掉 go2rtc，避免残留进程占端口。
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, ["camera"])
+    except Exception:  # noqa: BLE001
+        await ctrl.stop()
+        hass.data[DOMAIN].pop("controller", None)
+        raise
+
     return True
 
 
