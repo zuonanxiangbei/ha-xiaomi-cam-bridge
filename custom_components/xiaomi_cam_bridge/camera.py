@@ -54,9 +54,8 @@ class XiaomiBridgeCamera(Camera):
         # 支持直播（HLS/WebRTC via stream 组件）
         self._attr_supported_features = CameraEntityFeature.STREAM
 
-    @property
-    def stream_source(self):
-        """返回直播源，供 HA stream 组件转码。"""
+    async def stream_source(self) -> str | None:
+        """返回直播源，供 HA stream 组件转码（HA 2025+ 为异步方法）。"""
         return self._rtsp
 
     async def async_camera_image(self, width=None, height=None):
