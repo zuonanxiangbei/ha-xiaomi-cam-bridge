@@ -5,10 +5,13 @@
 依赖全局 hass.data[DATA_FFMPEG]（已在 __init__ 注入）。
 """
 
+import asyncio
 import logging
 
+from haffmpeg.tools import IMAGE_JPEG, ImageFrame
+
 from homeassistant.components.camera import Camera, CameraEntityFeature
-from homeassistant.components.ffmpeg import FFmpegManager, HassFFmpeg
+from homeassistant.components.ffmpeg import FFmpegManager
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -39,8 +42,7 @@ class XiaomiBridgeCamera(Camera):
         super().__init__()
         self._cam_info = cam_info
         self._rtsp = rtsp_url
-        self._manager = FFmpegManager(hass, executable=ffmpeg_path)
-        self._ffmpeg = HassFFmpeg(self._manager, _LOGGER)
+        self._manager = FFmpegManager(hass, ffmpeg_path)
         self._attr_unique_id = f"{DOMAIN}_{cam_info['stream']}"
         self._attr_name = cam_info["name"]
         self._attr_device_info = {
@@ -58,14 +60,16 @@ class XiaomiBridgeCamera(Camera):
         return self._rtsp
 
     async def async_camera_image(self, width=None, height=None):
-        """静态取帧：用 ffmpeg 从 RTSP 抽一帧 JPEG。"""
+        """静态取帧：用自带 ffmpeg 从 RTSP 抽一帧 JPEG（ImageFrame 多年稳定 API）。"""
         extra = "-rtsp_transport tcp"
         if width and height:
-            extra += f" -vf scale={width}:{height}"
-        else:
-            extra += " -vf scale=960:-1"
+            extra += f" -s {width}x{height}"
         try:
-            image = await self._ffmpeg.async_get_image(self._rtsp, extra_cmd=extra)
+            image = await asyncio.shield(
+                ImageFrame(self._manager.binary).get_image(
+                    self._rtsp, output_format=IMAGE_JPEG, extra_cmd=extra
+                )
+            )
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("获取 %s 画面失败：%s", self._attr_name, err)
             return None
