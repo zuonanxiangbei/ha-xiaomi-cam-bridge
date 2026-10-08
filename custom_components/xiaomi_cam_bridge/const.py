@@ -9,9 +9,9 @@ FFMPEG_BIN = "ffmpeg"
 # go2rtc 监听地址（仅本机回环，外部只经 HA 8123 访问）
 # 注意：HA 内置 go2rtc 集成（source=system）已占用 1984/8554/8555，
 # 这里偏移到一个不冲突的区间，避免两台 go2rtc 抢端口导致起不来。
-GO2RTC_API_LISTEN = "127.0.0.1:11984"
-GO2RTC_RTSP_LISTEN = "127.0.0.1:18554"
-GO2RTC_WEBRTC_LISTEN = "127.0.0.1:18555"
+GO2RTC_API_LISTEN = "127.0.0.1:28984"
+GO2RTC_RTSP_LISTEN = "127.0.0.1:28554"
+GO2RTC_WEBRTC_LISTEN = "127.0.0.1:28555"
 
 # 默认值
 DEFAULT_UID = "882067089"
