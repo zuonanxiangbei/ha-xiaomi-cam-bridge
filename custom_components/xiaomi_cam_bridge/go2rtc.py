@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import os
+import subprocess
+import urllib.request
 
 from homeassistant.core import HomeAssistant
 
@@ -40,9 +42,16 @@ class Go2rtcController:
         ips = self.entry_data.get(CONF_IPS, {}) or {}
 
         lines = []
-        # 云端账号（密码在此，URL 内不放密码）
+        # 小米云凭证：go2rtc 静态配置要求的是「云 Token」（形如 V1:xxxx），
+        # 不是米家账号密码！Token 来源：
+        #   1) 浏览器扩展「小米token助手」登录米家网页后复制的 passtoken；
+        #   2) PC 端 go2rtc WebUI 登录小米账号后自动写入的 V1: 串。
+        # 若只填了裸 token（无 V1: 前缀），这里自动补上。
+        token = (password or "").strip()
+        if token and not token.startswith("V1:"):
+            token = "V1:" + token
         lines.append("xiaomi:")
-        lines.append(f'  {uid}: "{password}"')
+        lines.append(f'  {uid}: "{token}"')
         lines.append("")
         # 流定义
         lines.append("streams:")
@@ -67,9 +76,14 @@ class Go2rtcController:
         lines.append(f'  listen: "{GO2RTC_RTSP_LISTEN}"')
         lines.append("webrtc:")
         lines.append(f'  listen: "{GO2RTC_WEBRTC_LISTEN}"')
+        # 关键点：go2rtc 的日志文件配置键是 `outputs`（list），不是 `file:`。
+        # 旧写法 `file: "path"` 会被静默忽略 → 日志只写 stdout（我们已丢弃）
+        # → go2rtc.log 永不生成。必须用 outputs 列表。
         lines.append("log:")
         lines.append('  level: info')
-        lines.append(f'  file: "{self.log_path}"')
+        lines.append("  outputs:")
+        lines.append("    - stdout")
+        lines.append(f'    - file: "{self.log_path}"')
         lines.append("")
         return "\n".join(lines)
 
@@ -93,16 +107,79 @@ class Go2rtcController:
         self.hass.async_create_task(self._diagnose_log())
 
     async def _diagnose_log(self) -> None:
-        """延迟 12s 读取 go2rtc.log 末尾并告警输出，便于经 /api/error_log 远程查看。"""
-        await asyncio.sleep(12)
+        """延迟拉起诊断：进程状态 + go2rtc.log 末尾 + 本地 API 流状态 + 强制拉流探测。
+
+        强制用 ffmpeg 拉一次 RTSP，会触发 go2rtc 真正去连小米云/P2P，
+        从而在 go2rtc.log 里暴露「云 Token 是否有效 / 设备是否连通」的结果。
+        """
+        await asyncio.sleep(15)
+        # 1) 进程存活状态
+        if self.proc is not None:
+            _LOGGER.warning(
+                "[xmb-go2rtc] 进程状态 pid=%s returncode=%s（None=仍在运行）",
+                self.proc.pid, self.proc.returncode,
+            )
+        else:
+            _LOGGER.warning("[xmb-go2rtc] 进程对象为空（start 未成功创建子进程）")
+        # 2) go2rtc.log 末尾
         try:
             lines = await self.hass.async_add_executor_job(self._read_log_tail)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("[xmb-go2rtc] 读取 go2rtc.log 失败：%s", err)
-            return
+            lines = []
         _LOGGER.warning("[xmb-go2rtc] === go2rtc.log 末 %d 行 ===", len(lines))
         for ln in lines:
             _LOGGER.warning("[xmb-go2rtc] %s", ln)
+        # 3) 本地 API：流是否已注册、producer 状态
+        try:
+            api = await self.hass.async_add_executor_job(self._probe_api)
+            _LOGGER.warning("[xmb-go2rtc] API /api/streams: %s", api[:1500])
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "[xmb-go2rtc] 查询 go2rtc API 失败（进程未起/端口未监听）：%s", err
+            )
+        # 4) 强制拉流探测（触发真实连接）
+        try:
+            probe = await self.hass.async_add_executor_job(self._probe_streams)
+            _LOGGER.warning("[xmb-go2rtc] 强制拉流探测：%s", probe)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("[xmb-go2rtc] 拉流探测异常：%s", err)
+
+    def _probe_api(self) -> str:
+        url = f"http://{GO2RTC_API_LISTEN}/api/streams"
+        try:
+            with urllib.request.urlopen(url, timeout=6) as resp:
+                return resp.read().decode("utf-8", "replace")[:1500]
+        except Exception as err:  # noqa: BLE001
+            return f"(请求异常: {err})"
+
+    def _probe_streams(self) -> str:
+        """用自带 ffmpeg 对每个摄像头 RTSP 拉流 5s，触发 go2rtc 连小米云/P2P。"""
+        _, port = GO2RTC_RTSP_LISTEN.split(":")
+        results = []
+        for cam in CAMERAS:
+            url = f"rtsp://127.0.0.1:{port}/{cam['stream']}"
+            cmd = [
+                self.bin_mgr.ffmpeg_path, "-rtsp_transport", "tcp",
+                "-i", url, "-t", "5", "-f", "null", "-",
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=12, cwd=self.base,
+                )
+                out = (proc.stderr or "") + (proc.stdout or "")
+                lines_out = [l for l in out.splitlines() if l.strip()]
+                frames = [l for l in lines_out if "frame=" in l]
+                if frames:
+                    summary = frames[-1].strip()
+                elif lines_out:
+                    summary = " | ".join(lines_out[-3:])[:300]
+                else:
+                    summary = "(无输出)"
+                results.append(f"{cam['stream']}: rc={proc.returncode} {summary}")
+            except Exception as err:  # noqa: BLE001
+                results.append(f"{cam['stream']}: 探测异常 {err}")
+        return " || ".join(results)
 
     def _read_log_tail(self, n: int = 50) -> list:
         if not os.path.isfile(self.log_path):
