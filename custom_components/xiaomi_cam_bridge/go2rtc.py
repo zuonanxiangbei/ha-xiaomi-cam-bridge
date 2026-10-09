@@ -31,6 +31,7 @@ class Go2rtcController:
         self.entry_data = entry_data
         self.bin_mgr = bin_mgr
         self.proc: asyncio.subprocess.Process | None = None
+        self._log_fh = None
         self.base = hass.config.path("custom_components", "xiaomi_cam_bridge")
         self.config_path = os.path.join(self.base, "go2rtc.yaml")
         self.log_path = os.path.join(self.base, "go2rtc.log")
@@ -91,12 +92,19 @@ class Go2rtcController:
         yaml_text = await self.hass.async_add_executor_job(self._render_yaml)
         await self.hass.async_add_executor_job(self._write_yaml, yaml_text)
 
+        # 不管 go2rtc 版本是否支持 log.outputs 的 file 输出（v1.9.14 实测未落盘），
+        # 直接把子进程 stdout/stderr 重定向到日志文件——版本无关、必定落盘。
+        try:
+            log_fh = await self.hass.async_add_executor_job(self._open_log_file)
+        except OSError:
+            self._log_fh = None
+            log_fh = asyncio.subprocess.DEVNULL
         self.proc = await asyncio.create_subprocess_exec(
             self.bin_mgr.go2rtc_path,
             "-config",
             self.config_path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
             close_fds=True,
         )
         _LOGGER.info(
@@ -187,6 +195,11 @@ class Go2rtcController:
         with open(self.log_path, "r", encoding="utf-8", errors="replace") as fh:
             return fh.read().splitlines()[-n:]
 
+    def _open_log_file(self):
+        # 每次启动截断重写，保证日志对应本次运行
+        self._log_fh = open(self.log_path, "wb")
+        return self._log_fh
+
     def _write_yaml(self, text: str) -> None:
         with open(self.config_path, "w", encoding="utf-8") as fh:
             fh.write(text)
@@ -204,3 +217,9 @@ class Go2rtcController:
                 pass
         finally:
             self.proc = None
+            if self._log_fh is not None:
+                try:
+                    self._log_fh.close()
+                except OSError:
+                    pass
+                self._log_fh = None
