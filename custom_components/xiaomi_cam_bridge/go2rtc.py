@@ -43,6 +43,25 @@ class Go2rtcController:
         ips = self.entry_data.get(CONF_IPS, {}) or {}
 
         lines = []
+        # 显式声明要启用的 go2rtc 模块白名单（app.modules）。
+        # 正常官方全量构建下 app.Modules 为 nil → 全部模块初始化；但部分 go2rtc
+        # 构建/分支会默认带 modules 白名单（或按需裁剪），导致 xiaomi / webrtc 等
+        # 模块不被初始化，表现为 `streams: unsupported scheme: xiaomi://` 且 webrtc
+        # 监听缺失。这里显式列出全部官方模块名（含 xiaomi / webrtc），保证桥接所需
+        # 模块必然初始化，与官方全量构建行为一致，且不依赖任何默认白名单。
+        lines.append("app:")
+        lines.append("  modules:")
+        for _m in (
+            "api", "ws", "streams", "http", "rtsp", "webrtc", "mp4", "hls",
+            "mjpeg", "hass", "homekit", "onvif", "rtmp", "webtorrent",
+            "wyoming", "echo", "exec", "expr", "ffmpeg", "alsa", "v4l2",
+            "bubble", "doorbird", "dvrip", "eseecloud", "flussonic", "gopro",
+            "isapi", "ivideon", "mpegts", "multitrans", "nest", "ring",
+            "roborock", "tapo", "tuya", "wyze", "xiaomi", "yandex", "debug",
+            "ngrok", "pinggy", "srtp",
+        ):
+            lines.append(f"    - {_m}")
+        lines.append("")
         # 小米云凭证：go2rtc 静态配置要求的是「云 Token」（形如 V1:xxxx），
         # 不是米家账号密码！Token 来源：
         #   1) 浏览器扩展「小米token助手」登录米家网页后复制的 passtoken；
@@ -157,6 +176,14 @@ class Go2rtcController:
         _LOGGER.warning("[xmb-go2rtc] === go2rtc.log 末 %d 行（含 xiaomi 源报错）===", len(lines))
         for ln in lines:
             _LOGGER.warning("[xmb-go2rtc] %s", ln)
+        # 4b) 读取日志头（启动阶段 + 任何 panic 堆栈），确认模块初始化顺序与是否崩溃
+        try:
+            head = await self.hass.async_add_executor_job(self._read_log_head, 40)
+        except Exception as err:  # noqa: BLE001
+            head = []
+        _LOGGER.warning("[xmb-go2rtc] === go2rtc.log 首 %d 行（启动/panic 堆栈）===", len(head))
+        for ln in head:
+            _LOGGER.warning("[xmb-go2rtc] %s", ln)
         # 5) 本地 API：流是否已注册、producer 状态
         try:
             api = await self.hass.async_add_executor_job(self._probe_api)
@@ -165,6 +192,14 @@ class Go2rtcController:
             _LOGGER.warning(
                 "[xmb-go2rtc] 查询 go2rtc API 失败（进程未起/端口未监听）：%s", err
             )
+        # 5b) 已注册源 scheme 列表（定位 unsupported scheme 的权威依据）
+        # 若返回里没有 "xiaomi" → xiaomi 模块根本没初始化（白名单/构建裁剪/初始化
+        # 崩溃）；若包含 "xiaomi" 却仍报 unsupported → 源串格式问题。
+        try:
+            schemes = await self.hass.async_add_executor_job(self._probe_schemes)
+            _LOGGER.warning("[xmb-go2rtc] API /api/schemes: %s", schemes[:800])
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("[xmb-go2rtc] 查询 schemes 失败（进程未起/端口未监听）：%s", err)
 
     def _probe_api(self) -> str:
         url = f"http://{GO2RTC_API_LISTEN}/api/streams"
@@ -258,6 +293,33 @@ class Go2rtcController:
             return ["(go2rtc.log 尚未生成)"]
         with open(self.log_path, "r", encoding="utf-8", errors="replace") as fh:
             return fh.read().splitlines()[-n:]
+
+    def _read_log_head(self, n: int = 40) -> list:
+        """读取日志头部（启动阶段 + 任何 panic 堆栈）。
+
+        每次启动都会截断重写日志，故头部即本次运行的启动顺序；若某模块 Init
+        崩溃，Go 的 panic 堆栈会打印在 stderr（已重定向到本日志），据此可判定
+        初始化循环是否在 xiaomi/webrtc 之前中断。
+        """
+        if not os.path.isfile(self.log_path):
+            return ["(go2rtc.log 尚未生成)"]
+        with open(self.log_path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines()[:n]
+
+    def _probe_schemes(self) -> str:
+        """查询 go2rtc 已注册的源 scheme 列表（GET /api/schemes）。
+
+        这是定位 `unsupported scheme: xiaomi://` 的权威手段：返回的是 go2rtc
+        当前真正注册了的源协议（handlers 表的键）。若列表里没有 `xiaomi`，说明
+        xiaomi 模块根本没初始化（模块白名单排除 / 构建裁剪 / 初始化崩溃）；若包含
+        `xiaomi` 却仍报 unsupported，则问题在源串格式而非模块注册。
+        """
+        url = f"http://{GO2RTC_API_LISTEN}/api/schemes"
+        try:
+            with urllib.request.urlopen(url, timeout=6) as resp:
+                return resp.read().decode("utf-8", "replace")[:800]
+        except Exception as err:  # noqa: BLE001
+            return f"(请求异常: {err})"
 
     def _open_log_file(self):
         # 每次启动截断重写，保证日志对应本次运行
