@@ -43,6 +43,13 @@ class XiaomiCamBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if ip:
                     ips[cam["key"]] = ip
             user_input[CONF_IPS] = ips
+            # reconfigure 流程（context 带 entry_id）必须用 update+abort，
+            # 否则 async_create_entry 会抛 HomeAssistantError（HA 2026.9）：
+            #   "Creates a new entry in a 'reconfigure' flow, when it is
+            #    expected to update an existing entry and abort"
+            # → 配置向导直接报 "Unknown error occurred"。这是截图的真因。
+            if self.context.get("entry_id"):
+                return self.async_update_reload_and_abort(data=user_input)
             return self.async_create_entry(title="小米摄像头桥接", data=user_input)
 
         existing = self._existing_data()
