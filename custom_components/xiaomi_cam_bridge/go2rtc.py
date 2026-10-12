@@ -146,6 +146,25 @@ class Go2rtcController:
           5) 本地 API /api/streams 流状态
         """
         await asyncio.sleep(15)
+        # 0) 集成侧收到的配置（entry_data）—— 确认 uid/region/ips/token 是否到位
+        try:
+            ed = dict(self.entry_data or {})
+            ed.pop(CONF_PASSWORD, None)  # 不打印密钥
+            _LOGGER.warning("[xmb-go2rtc] 集成配置 entry_data(已掩码password)=%s", ed)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("[xmb-go2rtc] 读取 entry_data 异常：%s", err)
+        # 0b) 本集成写出的 go2rtc.yaml 头部（确认 app.modules 与 streams 实际内容）
+        try:
+            yhead = await self.hass.async_add_executor_job(self._read_yaml_head, 60)
+            masked = [
+                (ln if "V1:" not in ln and "token" not in ln.lower() else "(已掩码凭证行)")
+                for ln in yhead
+            ]
+            _LOGGER.warning("[xmb-go2rtc] === 写出 go2rtc.yaml 头部 60 行 ===")
+            for ln in masked:
+                _LOGGER.warning("[xmb-go2rtc] %s", ln)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("[xmb-go2rtc] 读取 go2rtc.yaml 失败：%s", err)
         # 1) 进程存活状态
         if self.proc is not None:
             _LOGGER.warning(
@@ -200,6 +219,14 @@ class Go2rtcController:
             _LOGGER.warning("[xmb-go2rtc] API /api/schemes: %s", schemes[:800])
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("[xmb-go2rtc] 查询 schemes 失败（进程未起/端口未监听）：%s", err)
+        # 5c) go2rtc 自身加载到的配置（/api/config）—— 直接确认 app.modules 是否生效、
+        # 以及它实际读到的 streams/xiaomi 内容（定位「集成写的 yaml」与「go2rtc 实际加载」
+        # 是否一致）。
+        try:
+            gc = await self.hass.async_add_executor_job(self._probe_go2rtc_config)
+            _LOGGER.warning("[xmb-go2rtc] go2rtc /api/config(前 1000 字): %s", gc[:1000])
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("[xmb-go2rtc] 查询 go2rtc /api/config 失败：%s", err)
 
     def _probe_api(self) -> str:
         url = f"http://{GO2RTC_API_LISTEN}/api/streams"
@@ -320,6 +347,26 @@ class Go2rtcController:
                 return resp.read().decode("utf-8", "replace")[:800]
         except Exception as err:  # noqa: BLE001
             return f"(请求异常: {err})"
+
+    def _probe_go2rtc_config(self) -> str:
+        """查询 go2rtc 自身加载到的配置（GET /api/config）。
+
+        直接确认 go2rtc 实际读到了什么：app.modules 是否生效、streams/xiaomi 内容
+        是否与集成写出的 yaml 一致。这是区分「二进制缺模块」与「配置未生效」的决定性依据。
+        """
+        url = f"http://{GO2RTC_API_LISTEN}/api/config"
+        try:
+            with urllib.request.urlopen(url, timeout=6) as resp:
+                return resp.read().decode("utf-8", "replace")[:1500]
+        except Exception as err:  # noqa: BLE001
+            return f"(请求异常: {err})"
+
+    def _read_yaml_head(self, n: int = 60) -> list:
+        """读取集成写出的 go2rtc.yaml 头部，确认 app.modules / streams 实际内容。"""
+        if not os.path.isfile(self.config_path):
+            return ["(go2rtc.yaml 尚未生成)"]
+        with open(self.config_path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines()[:n]
 
     def _open_log_file(self):
         # 每次启动截断重写，保证日志对应本次运行
