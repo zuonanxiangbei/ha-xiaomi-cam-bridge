@@ -9,6 +9,7 @@ HACS 从 zip 解压不保留 Unix 执行位；部分 proot/Android 文件系统
   3. 每一步以 WARNING 级写诊断日志（[xmb-diag]），便于经 /api/error_log 远程排障。
 """
 
+import hashlib
 import logging
 import os
 import shutil
@@ -20,6 +21,18 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from .const import DOMAIN, GO2RTC_BIN, FFMPEG_BIN
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _sha256(path: str) -> str:
+    """计算文件 SHA256（前 16 位即可区分不同二进制）。"""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:16]
+    except OSError:
+        return "n/a"
 
 
 class BinaryManager:
@@ -85,23 +98,28 @@ class BinaryManager:
                 diag.append(f"{name} 原位 chmod 失败：{err}")
             mode_after = stat_mod.filemode(os.stat(src).st_mode)
             x_ok_src = os.access(src, os.X_OK)
-            diag.append(f"{name} chmod 后 mode={mode_after} x_ok={x_ok_src}")
+            src_sha = _sha256(src)
+            diag.append(f"{name} chmod 后 mode={mode_after} x_ok={x_ok_src} sha={src_sha}")
 
             if not x_ok_src:
                 # chmod 不生效（FUSE/sdcardfs 等）→ 重定位到必然可执行的目录
                 for cand in candidates:
                     try:
                         dst = os.path.join(cand, f"xmb_{name}")
-                        # 已存在且大小一致则跳过拷贝（避免重试循环反复拷 56MB）
+                        # 旧逻辑只比「文件大小」：若目标残留「同名同尺寸但内容被裁剪过」
+                        # 的旧二进制（缺 xiaomi/webrtc 等模块），大小一致会被误判为相同而
+                        # 跳过拷贝 → 设备一直跑缺模块的二进制。改为按 SHA256 比对：
+                        # 内容不同或目标不存在才覆盖，保证设备跑的是集成自带的完整二进制。
                         need_copy = True
+                        dst_sha = _sha256(dst) if os.path.isfile(dst) else "missing"
                         if os.path.isfile(dst):
-                            need_copy = os.path.getsize(dst) != os.path.getsize(src)
+                            need_copy = src_sha != dst_sha
                         if need_copy:
                             shutil.copyfile(src, dst)
                         os.chmod(dst, 0o755)
                         ok = os.access(dst, os.X_OK)
                         diag.append(
-                            f"{name} 重定位到 {dst}（copy={need_copy}）x_ok={ok}"
+                            f"{name} 重定位到 {dst}（copy={need_copy} src_sha={src_sha} dst_sha={dst_sha}）x_ok={ok}"
                         )
                         if ok:
                             final = dst
@@ -109,6 +127,7 @@ class BinaryManager:
                     except OSError as err:
                         diag.append(f"{name} 重定位到 {cand} 失败：{err}")
             results[name] = final
+            diag.append(f"{name} 最终执行路径={final} sha={_sha256(final)}")
 
         for line in diag:
             _LOGGER.warning("[xmb-diag] %s", line)
